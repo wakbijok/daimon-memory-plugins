@@ -7,7 +7,7 @@
 ## 1. Problem
 
 A real install of the daimon-memory Codex plugin does not work. Root cause, established
-by probing the live backend (`http://10.100.30.27:8080`) and the local install:
+by probing the live backend (`http://localhost:8080`) and the local install:
 
 - The daimon server **enforces the bearer token**: `/v1/recall` and `/mcp` return `401`
   on a missing, empty, or wrong key (verified). Only a valid key returns `200`.
