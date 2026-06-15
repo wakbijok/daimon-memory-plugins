@@ -6,7 +6,6 @@
   "license": "MIT",
   "keywords": ["memory", "semantic-search", "cross-tool", "recall", "daimon", "codex"],
   "hooks": "./hooks/hooks.json",
-  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "daimon-memory",
     "shortDescription": "Shared cross-tool memory for Codex",

@@ -2,10 +2,10 @@
 # ============================================================================
 # daimon-memory -> Codex  - automated CLIENT installer.
 #
-# Codex has a real `codex plugin` CLI, so this fully installs (no in-app step). It stages
-# the marketplace into $CODEX_HOME, substitutes the plugin-root + MCP-URL placeholders
-# (Codex does not inject a plugin-root env into hook subprocesses), writes the hook config,
-# and registers + installs via the CLI.
+# Codex has a real `codex plugin` CLI, so this fully installs (no in-app step). It stages the
+# marketplace into $CODEX_HOME, bakes the plugin-root into the hook config, writes the hooks'
+# key file, registers the daimon MCP server in config.toml (inline bearer header), installs the
+# plugin via the CLI, and runs a post-install auth probe that gates success.
 #
 # Usage:  ./install.sh [--endpoint URL] [--tenant UUID] [--api-key TOKEN] [--yes]
 # ============================================================================
@@ -68,6 +68,50 @@ open(p, 'w').write(s); print("  appended [features] memories = true")
 PY
 }
 
+# Register the daimon MCP server the Codex-native way: an inline-bearer [mcp_servers.daimon]
+# block in config.toml. `codex mcp add` has no header flag, so write the TOML directly.
+# Idempotent (strips any existing daimon block first). Skipped without a key -- an auth-enforcing
+# server would 401 the empty bearer anyway; recall/persona still run via the hook key file.
+register_mcp(){
+  local cfg="$CODEX_HOME/config.toml"
+  [ -n "$API_KEY" ] || { echo "  (no API key; skipping MCP registration -- pass --api-key to enable the daimon tools)"; return 0; }
+  have_python || { echo "  (python3 absent; add [mcp_servers.daimon] to config.toml manually)"; return 1; }
+  ENDPOINT="$ENDPOINT" API_KEY="$API_KEY" CFG="$cfg" pyrun - <<'PY'
+import os, re
+cfg, endpoint, key = os.environ["CFG"], os.environ["ENDPOINT"], os.environ["API_KEY"]
+s = open(cfg).read() if os.path.exists(cfg) else ""
+s = re.sub(r'(?ms)^\[mcp_servers\.daimon\][^\[]*', '', s)   # drop any existing daimon block
+if s and not s.endswith("\n"): s += "\n"
+block = ('[mcp_servers.daimon]\n'
+         f'url = "{endpoint}/mcp"\n'
+         f'http_headers = {{ Authorization = "Bearer {key}" }}\n')
+open(cfg, "w").write(s + block)
+print("  registered [mcp_servers.daimon] (streamable_http, inline bearer)")
+PY
+}
+
+# Gate success on real auth. daimon-memory enforces a bearer token, so a missing/invalid key
+# returns 401 and the integration is silently dead -- catch that here instead of printing "Done".
+verify_auth(){
+  command -v curl >/dev/null 2>&1 || { echo "  (curl absent; skipping auth probe)"; return 0; }
+  local code
+  # Build args as an array so the optional auth header groups correctly (a ${VAR:+...} with an
+  # embedded quoted multi-word value word-splits into broken curl args -> spurious 400).
+  local args=(-s -m 6 -o /dev/null -w '%{http_code}' -X POST "$ENDPOINT/v1/recall"
+    -H "content-type: application/json" -H "x-daimon-tenant: $TENANT"
+    -d '{"query":"ping","filters":{"limit":1}}')
+  [ -n "$API_KEY" ] && args+=(-H "authorization: Bearer $API_KEY")
+  code=$(curl "${args[@]}")
+  case "$code" in
+    200) echo "  auth OK -- recall reachable at $ENDPOINT";;
+    401) echo "ERROR: $ENDPOINT rejected the key (401). daimon-memory requires a valid bearer token;" >&2
+         echo "       yours is missing or invalid. Re-run: ./install.sh --api-key <token>" >&2
+         exit 1;;
+    000) echo "  WARN: $ENDPOINT unreachable; recall is best-effort until the server is up";;
+    *)   echo "  WARN: unexpected HTTP $code from $ENDPOINT/v1/recall";;
+  esac
+}
+
 # Resolve the real codex binary (bypass any broken shell wrappers).
 CODEX="$(command -v codex 2>/dev/null || true)"
 [ -x "/Applications/Codex.app/Contents/Resources/codex" ] && CODEX="/Applications/Codex.app/Contents/Resources/codex"
@@ -81,7 +125,7 @@ echo "Installs the daimon-memory plugin (hot-memory recall + MCP tools)."
 hr
 ask ENDPOINT "daimon-memory endpoint - the URL where your daimon-memory server runs" "http://localhost:8080"
 ask TENANT   "Tenant ID - which memory space to use (match your other tools)"        "$DEV_TENANT"
-ask API_KEY  "API key - bearer token if the server sets DAIMON_API_KEY (empty = no auth)" ""
+ask API_KEY  "API key - bearer token issued for your tenant (empty = unauthenticated dev server)" ""
 [ "$API_KEY" = "none" ] && API_KEY=""
 
 if command -v curl >/dev/null 2>&1; then
@@ -96,34 +140,22 @@ rm -rf "$STABLE"; mkdir -p "$STABLE"
 cp -R "$SELF_DIR/.claude-plugin" "$SELF_DIR/plugins" "$STABLE/"
 PLUGIN_DIR="$STABLE/plugins/daimon-memory"
 
-# Substitute placeholders (Codex doesn't inject CODEX_PLUGIN_ROOT into hooks). Python is
-# preferred: MSYS sed (Git Bash for Windows) handles -i.bak differently from GNU/BSD sed
-# and can mangle Windows paths; sed remains the fallback for minimal POSIX hosts.
+# Bake the plugin-root into the hook config (Codex doesn't inject CODEX_PLUGIN_ROOT into hook
+# subprocesses). Python preferred; MSYS sed (Git Bash) handles -i.bak oddly, so it is the fallback.
 if have_python; then
-  pyrun - "$PLUGIN_DIR" "$ENDPOINT" "$API_KEY" <<'PY'
+  pyrun - "$PLUGIN_DIR" <<'PY'
 import sys, pathlib
-plugin_dir, endpoint, api_key = sys.argv[1], sys.argv[2], sys.argv[3]
-substitutions = [
-    ("hooks/hooks.json", [("__DAIMON_PLUGIN_ROOT__", plugin_dir)]),
-    (".mcp.json",        [("__DAIMON_MCP_URL__", endpoint + "/mcp"),
-                          ("__DAIMON_API_KEY__", api_key)]),
-]
-for rel, pairs in substitutions:
-    p = pathlib.Path(plugin_dir) / rel
-    text = p.read_text(encoding="utf-8")
-    for placeholder, value in pairs:
-        text = text.replace(placeholder, value)
-    p.write_text(text, encoding="utf-8")
+plugin_dir = sys.argv[1]
+p = pathlib.Path(plugin_dir) / "hooks/hooks.json"
+p.write_text(p.read_text(encoding="utf-8").replace("__DAIMON_PLUGIN_ROOT__", plugin_dir), encoding="utf-8")
 PY
 else
   sed -i.bak "s|__DAIMON_PLUGIN_ROOT__|$PLUGIN_DIR|g" "$PLUGIN_DIR/hooks/hooks.json"; rm -f "$PLUGIN_DIR/hooks/hooks.json.bak"
-  sed -i.bak "s|__DAIMON_MCP_URL__|$ENDPOINT/mcp|g" "$PLUGIN_DIR/.mcp.json"; rm -f "$PLUGIN_DIR/.mcp.json.bak"
-  sed -i.bak "s|__DAIMON_API_KEY__|$API_KEY|g" "$PLUGIN_DIR/.mcp.json"; rm -f "$PLUGIN_DIR/.mcp.json.bak"
 fi
 
-# Config the hooks read (Codex hook subprocesses don't get env reliably). lib/daimon.mjs
-# loads this file as the fallback between env and the dev defaults. Prefer python3 so a key
-# containing JSON-special characters can't silently produce a malformed (= ignored) config.
+# Config the hooks read (Codex hook subprocesses don't get env reliably). lib/daimon.mjs loads
+# this file as the fallback between env and the dev defaults. Prefer python3 so a key containing
+# JSON-special characters can't silently produce a malformed (= ignored) config.
 if have_python; then
   ENDPOINT="$ENDPOINT" TENANT="$TENANT" API_KEY="$API_KEY" CFG="$PLUGIN_DIR/scripts/lib/daimon.config.json" pyrun - <<'PY'
 import json, os
@@ -136,7 +168,12 @@ else
 EOF
 fi
 chmod 600 "$PLUGIN_DIR/scripts/lib/daimon.config.json"
-echo "  baked plugin root, MCP url ($ENDPOINT/mcp), and hook config"
+echo "  baked plugin root + hook key config"
+
+# Register the daimon MCP server in config.toml (inline bearer) -- this is what exposes the
+# recall/remember/read tools to Codex. The bundled .mcp.json is no longer used (Codex empties it).
+echo "registering daimon MCP server in $CODEX_HOME/config.toml"
+register_mcp || echo "  add manually: [mcp_servers.daimon] with url + http_headers Authorization"
 
 # Enable Codex native memory so the mirror has something to read (best-effort, idempotent;
 # defaults handle idle/age/secret-redaction). Manual fallback: Codex Settings -> Memory.
@@ -147,6 +184,10 @@ enable_native_memory || echo "  enable manually: Codex Settings -> Memory, then 
 echo "registering marketplace + installing plugin..."
 "$CODEX" plugin marketplace add "$STABLE" 2>&1 | sed 's/^/  /' || true
 "$CODEX" plugin add daimon-memory@daimon-memory 2>&1 | sed 's/^/  /' || true
+
+# Gate on real auth before declaring success (an auth-enforcing server 401s a missing/bad key).
+echo "verifying auth against $ENDPOINT"
+verify_auth
 
 hr; bold "Done"
 echo "Restart Codex. Relevant memory auto-recalls into each prompt; the daimon MCP tools"
