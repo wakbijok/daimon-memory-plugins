@@ -1,0 +1,6 @@
+.DS_Store
+**/__pycache__/
+*.pyc
+# install-generated client config that may carry DAIMON_API_KEY — never commit
+**/daimon.config.json
+*.bak-daimon

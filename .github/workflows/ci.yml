@@ -1,0 +1,23 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  plugins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Hook scripts parse + exit 0 with no backend (graceful degradation)
+        run: |
+          set -e
+          for f in claude-code/plugins/daimon-memory/scripts/*.mjs codex/plugins/daimon-memory/scripts/*.mjs; do
+            node --check "$f"
+            echo '{}' | DAIMON_ENDPOINT=http://127.0.0.1:9 node "$f" >/dev/null
+          done
+      - name: Unit tests (nudge engine + CC/Codex lib parity)
+        run: node --test tests/*.test.mjs
