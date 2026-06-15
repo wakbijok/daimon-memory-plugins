@@ -4,7 +4,7 @@
 // Items" summary, so the agent can orient on what is pending; (3) recent shared memory. Seeds the
 // session "already injected" set so per-turn recall stays incremental. Best-effort: any failure
 // injects nothing. (Note: Claude Code cannot render a greeting before the user's first turn, so
-// this hook supplies context, not an auto-greeting -- see lesson on session-start behavior.)
+// this hook supplies context, not an auto-greeting; see lesson on session-start behavior.)
 import { readStdin, recall, read, formatHits, loadSystemBlock, injectAndExit, ENDPOINT } from "./lib/daimon.mjs";
 import { clearInjected, markInjected } from "./recall-state.mjs";
 import { loadPrecompact, clearPrecompact } from "./precompact-state.mjs";

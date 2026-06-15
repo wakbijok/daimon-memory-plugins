@@ -70,11 +70,11 @@ PY
 
 # Register the daimon MCP server the Codex-native way: an inline-bearer [mcp_servers.daimon]
 # block in config.toml. `codex mcp add` has no header flag, so write the TOML directly.
-# Idempotent (strips any existing daimon block first). Skipped without a key -- an auth-enforcing
+# Idempotent (strips any existing daimon block first). Skipped without a key; an auth-enforcing
 # server would 401 the empty bearer anyway; recall/persona still run via the hook key file.
 register_mcp(){
   local cfg="$CODEX_HOME/config.toml"
-  [ -n "$API_KEY" ] || { echo "  (no API key; skipping MCP registration -- pass --api-key to enable the daimon tools)"; return 0; }
+  [ -n "$API_KEY" ] || { echo "  (no API key; skipping MCP registration; pass --api-key to enable the daimon tools)"; return 0; }
   have_python || { echo "  (python3 absent; add [mcp_servers.daimon] to config.toml manually)"; return 1; }
   ENDPOINT="$ENDPOINT" API_KEY="$API_KEY" CFG="$cfg" pyrun - <<'PY'
 import os, re
@@ -91,7 +91,7 @@ PY
 }
 
 # Gate success on real auth. daimon-memory enforces a bearer token, so a missing/invalid key
-# returns 401 and the integration is silently dead -- catch that here instead of printing "Done".
+# returns 401 and the integration is silently dead; catch that here instead of printing "Done".
 verify_auth(){
   command -v curl >/dev/null 2>&1 || { echo "  (curl absent; skipping auth probe)"; return 0; }
   local code
@@ -103,7 +103,7 @@ verify_auth(){
   [ -n "$API_KEY" ] && args+=(-H "authorization: Bearer $API_KEY")
   code=$(curl "${args[@]}")
   case "$code" in
-    200) echo "  auth OK -- recall reachable at $ENDPOINT";;
+    200) echo "  auth OK; recall reachable at $ENDPOINT";;
     401) echo "ERROR: $ENDPOINT rejected the key (401). daimon-memory requires a valid bearer token;" >&2
          echo "       yours is missing or invalid. Re-run: ./install.sh --api-key <token>" >&2
          exit 1;;
@@ -170,7 +170,7 @@ fi
 chmod 600 "$PLUGIN_DIR/scripts/lib/daimon.config.json"
 echo "  baked plugin root + hook key config"
 
-# Register the daimon MCP server in config.toml (inline bearer) -- this is what exposes the
+# Register the daimon MCP server in config.toml (inline bearer); this is what exposes the
 # recall/remember/read tools to Codex. The bundled .mcp.json is no longer used (Codex empties it).
 echo "registering daimon MCP server in $CODEX_HOME/config.toml"
 register_mcp || echo "  add manually: [mcp_servers.daimon] with url + http_headers Authorization"
